@@ -31,7 +31,7 @@ jobs:
       working-directory: ./main
     - run: npm run build
       working-directory: ./main
-    - run: npm run package "--" --linux AppImage -p never '-c.linux.artifactName=${name}-${version}-KDE-Wayland.${ext}'
+    - run: npm run package "--" --linux AppImage -p never '-c.linux.artifactName=${name}-${version}-Wayland.${ext}'
       working-directory: ./main
 
     - run: cat ./main/dist/latest-linux.yml
