@@ -89,6 +89,9 @@ export class KdeInput extends EventEmitter {
     this.hasEvdev = devices.length > 0
     if (this.hasEvdev) {
       this.log(`info [KdeInput] Reading input from: ${devices.map(d => d.name).join(', ')}`)
+      // "keyboard" devices include the extra interfaces of mice, so a readable one doesn't mean
+      // modifiers are visible: always take them from KWin when it can tell (see onRaw)
+      this.attachKeyState()
       return
     }
 
@@ -239,6 +242,8 @@ export class KdeInput extends EventEmitter {
       }
 
       const mod = EVDEV_MODIFIERS[code]
+      // keystate already reports modifiers (and their key events)
+      if (mod && this.hasKeyState) return
       if (mod) {
         if (value === 0) this.held.delete(code)
         else this.held.add(code)
