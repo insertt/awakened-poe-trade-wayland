@@ -1,4 +1,5 @@
 import path from 'path'
+import { spawn } from 'child_process'
 import { BrowserWindow, dialog, shell, Menu, WebContents } from 'electron'
 import { OVERLAY_WINDOW_OPTS } from 'electron-overlay-window'
 import { overlayBackend } from './overlay-controller'
@@ -42,7 +43,10 @@ export class OverlayWindow {
       webPreferences: {
         allowRunningInsecureContent: false,
         webviewTag: true,
-        spellcheck: false
+        spellcheck: false,
+        // the KWin backend minimizes the overlay while the game isn't focused; a throttled
+        // renderer then reacts late the first time it is shown again
+        backgroundThrottling: !useKWin
       }
     })
 
@@ -62,9 +66,37 @@ export class OverlayWindow {
     })
 
     this.window.webContents.setWindowOpenHandler((details) => {
-      shell.openExternal(details.url)
+      this.openInBrowser(details.url)
       return { action: 'deny' }
     })
+  }
+
+  private openInBrowser (url: string) {
+    if (!/^https?:\/\//i.test(url)) return
+
+    if (process.platform !== 'linux') {
+      shell.openExternal(url).catch((err) => {
+        this.logger.write(`error [OverlayWindow] shell.openExternal failed: ${err}`)
+      })
+      return
+    }
+
+    // shell.openExternal() runs xdg-open with our environment and reports success even if
+    // xdg-open fails. On KDE without KDE_SESSION_VERSION it falls back to the removed
+    // `kfmclient`, so run it ourselves with a sanitized environment.
+    const env = { ...process.env }
+    // AppImage overrides these, which can break xdg-open and the browser it launches
+    delete env.LD_LIBRARY_PATH
+    delete env.LD_PRELOAD
+    if (useKWin || /kde/i.test(env.XDG_CURRENT_DESKTOP ?? '')) {
+      env.KDE_SESSION_VERSION ||= '6'
+    }
+    spawn('xdg-open', [url], { env, detached: true, stdio: 'ignore' })
+      .on('error', (e) => this.logger.write(`error [OverlayWindow] xdg-open failed: ${e}`))
+      .on('exit', (code) => {
+        if (code) this.logger.write(`error [OverlayWindow] xdg-open exited with code ${code}`)
+      })
+      .unref()
   }
 
   loadAppPage (port: number) {
