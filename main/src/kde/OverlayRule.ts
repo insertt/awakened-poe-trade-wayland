@@ -27,7 +27,10 @@ const RULE: Record<string, string> = {
   title: OVERLAY_TITLE,
   titlematch: '1', // Rules::ExactMatch
   layer: 'critical-notification',
-  layerrule: '2' // Rules::Force
+  layerrule: '2', // Rules::Force
+  // no taskbar entry: the app lives in the tray (the KWin script also sets this, but only once it matches the window)
+  skiptaskbar: 'true',
+  skiptaskbarrule: '2'
 }
 
 export class OverlayRule {

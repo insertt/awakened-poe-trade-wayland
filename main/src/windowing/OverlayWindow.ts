@@ -34,7 +34,7 @@ export class OverlayWindow {
       icon: path.join(__dirname, process.env.STATIC!, 'icon.png'),
       ...OVERLAY_WINDOW_OPTS,
       // Electron 43+ rounds frameless windows on Linux; that would clip widgets in the corners
-      ...(process.platform === 'linux' ? { roundedCorners: false } : {}),
+      ...(process.platform === 'linux' ? { roundedCorners: false, skipTaskbar: true } : {}),
       // KWin sets the geometry of the overlay, so it must not be fixed-size
       ...(useKWin ? { resizable: true, skipTaskbar: true, title: OVERLAY_TITLE } : {}),
       width: 800,
