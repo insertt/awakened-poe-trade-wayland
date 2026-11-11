@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { Worker } from 'node:worker_threads'
+import { spawn, type ChildProcess } from 'node:child_process'
 
 /**
  * Optional passive keyboard/mouse listener reading /dev/input/event*.
@@ -12,9 +12,12 @@ import { Worker } from 'node:worker_threads'
  * are unavailable. Note: that access lets any process of the user read all
  * keystrokes, which is why it isn't set up automatically.
  *
- * Each device is read with blocking reads in its own worker thread. Async fs
- * reads would each hold a libuv threadpool thread forever and starve other
- * fs work in the main process.
+ * Each device is read by its own `cat` child process; we read its stdout pipe.
+ * Async fs reads would each hold a libuv threadpool thread forever and starve
+ * other fs work, and blocking reads in worker threads hang app exit: Node
+ * joins workers on teardown, but a worker blocked in read() on a quiet device
+ * (e.g. a mouse's keyboard interface) never gets to notice it should stop.
+ * A child process is killed instead, and the signal interrupts its read().
  */
 
 export const EV_KEY = 1
@@ -56,22 +59,6 @@ function decodeEvents (buf: Buffer, length: number): number[] {
   return out
 }
 
-// Kept as a plain string (not Function#toString) so minification can't break it.
-// The worker only forwards raw bytes; decoding happens in the main thread.
-const WORKER_SRC = `
-const { parentPort, workerData } = require('node:worker_threads')
-const fs = require('node:fs')
-const fd = fs.openSync(workerData.path, 'r')
-const buf = Buffer.alloc(24 * 64)
-for (;;) {
-  let n
-  try { n = fs.readSync(fd, buf, 0, buf.length, null) } catch (e) {
-    parentPort.postMessage({ error: String(e) }); break
-  }
-  if (n > 0) parentPort.postMessage(buf.subarray(0, n))
-}
-`
-
 export type RawHandler = (type: number, code: number, value: number) => void
 
 /** Starts readers for all readable keyboards/mice. Returns the devices in use. */
@@ -85,19 +72,29 @@ export function startEvdev (onEvent: RawHandler, log: (msg: string) => void): In
   const readable = devices.filter(d => {
     try { fs.accessSync(d.path, fs.constants.R_OK); return true } catch { return false }
   })
+  const children: ChildProcess[] = []
   for (const dev of readable) {
-    const worker = new Worker(WORKER_SRC, { eval: true, workerData: { path: dev.path } })
-    worker.unref()
-    worker.on('message', (msg: Uint8Array | { error: string }) => {
-      if (!(msg instanceof Uint8Array)) {
-        log(`warn [evdev] ${dev.name}: ${msg.error}`)
-        return
-      }
-      const buf = Buffer.from(msg.buffer, msg.byteOffset, msg.byteLength)
-      const ev = decodeEvents(buf, buf.length)
+    const child = spawn('cat', [dev.path], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.push(child)
+    // pipe chunks aren't aligned to 24-byte records; keep the partial tail
+    let rest: Buffer = Buffer.alloc(0)
+    child.stdout!.on('data', (chunk: Buffer) => {
+      const buf = rest.length ? Buffer.concat([rest, chunk]) : chunk
+      const whole = buf.length - (buf.length % 24)
+      const ev = decodeEvents(buf, whole)
+      rest = buf.subarray(whole)
       for (let i = 0; i < ev.length; i += 3) onEvent(ev[i], ev[i + 1], ev[i + 2])
     })
-    worker.on('error', (e) => log(`warn [evdev] ${dev.name}: ${e.message}`))
+    let stderr = ''
+    child.stderr!.on('data', (d: Buffer) => { stderr += d.toString() })
+    child.on('error', (e) => log(`warn [evdev] ${dev.name}: ${e.message}`))
+    child.on('exit', (code, signal) => {
+      if (signal === 'SIGTERM') return // killed by us on exit
+      log(`warn [evdev] ${dev.name}: reader exited (${signal ?? `code ${code}`}) ${stderr.trim()}`)
+    })
   }
+  // children aren't killed with us; a leftover `cat` would linger until the
+  // device's next event (then die of SIGPIPE)
+  process.on('exit', () => { for (const c of children) c.kill('SIGTERM') })
   return readable
 }
